@@ -248,6 +248,14 @@ The wrapper also contains a `DiodeAdapter` path for deployments that want an
 alternative write backend. The same top-level client API is preserved while the
 backend behavior changes underneath.
 
+Important:
+
+- Diode backend support is still in active development
+- it should be treated as fragile and not yet a stable compatibility promise
+- downstream users should expect rough edges, behavior changes, and incomplete
+  documentation while this path matures
+- the default `pynetbox` backend remains the stable and recommended path
+
 ## Integration Pattern
 
 This wrapper works best when your application keeps policy in the app layer and
@@ -288,6 +296,16 @@ This repository currently exposes the extracted `pynetbox2.py` module as a
 package-managed dependency. Over time it may be reorganized into a more formal
 package layout, but the current priority is preserving a stable import surface
 for downstream projects.
+
+Current maturity by area:
+
+- stable focus:
+  - `pynetbox`-backed reads and writes
+  - cache-aware lookups
+  - upsert helpers and outcome reporting
+  - retry, cooldown, and rate-limit behavior
+- in-development / fragile:
+  - Diode backend support
 
 ## Compatibility Notes
 
