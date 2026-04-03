@@ -2204,6 +2204,7 @@ class NetBoxExtendedClient:
             )
             return UpsertOutcome(object=self.create(resource, payload), outcome="created")
 
+        explicit_lookup_fields = lookup_fields is not None
         if lookup_fields is None:
             if payload.get("id") is not None:
                 lookup_fields = ("id",)
@@ -2213,17 +2214,39 @@ class NetBoxExtendedClient:
                 lookup_fields = ()
 
         filters: dict[str, Any] = {}
+        missing_lookup_fields: list[str] = []
         for field in lookup_fields:
             if field not in payload:
+                if explicit_lookup_fields:
+                    missing_lookup_fields.append(field)
                 continue
             value = payload[field]
+            if explicit_lookup_fields and (
+                value is None or (isinstance(value, str) and not value.strip())
+            ):
+                missing_lookup_fields.append(field)
+                continue
 
             normalized_field = field
-            if not field.endswith("id") and isinstance(value, int) and field in FK_FIELDS[resource]:
+            if (
+                not field.endswith("id")
+                and isinstance(value, int)
+                and field in FK_FIELDS.get(resource, ())
+            ):
                 normalized_field = f"{field}_id"
             if hasattr(value, "id"):
                 value = getattr(value, "id")
+                if explicit_lookup_fields and (
+                    value is None or (isinstance(value, str) and not value.strip())
+                ):
+                    missing_lookup_fields.append(field)
+                    continue
             filters[self._lookup_filter_key(resource, normalized_field, value)] = value
+
+        if explicit_lookup_fields and missing_lookup_fields:
+            raise ValueError(
+                f"Invalid lookup_fields for {resource}: missing/blank values for {missing_lookup_fields}"
+            )
 
         logger.debug(
             "NetBox upsert start resource=%s lookup_fields=%s filters=%s payload_keys=%s",
