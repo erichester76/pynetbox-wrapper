@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pynetbox-wrapper"
+version = "0.1.0"
+description = "Unofficial helper wrapper around pynetbox extending NetBox client functionality"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Eric Chester" }
+]
+dependencies = [
+  "deepdiff>=8.0.1",
+  "pynetbox>=7.3.3",
+  "redis>=5.0.0",
+  "netboxlabs-diode-sdk>=1.10.0",
+]
+
+[tool.setuptools]
+py-modules = ["pynetbox2"]
