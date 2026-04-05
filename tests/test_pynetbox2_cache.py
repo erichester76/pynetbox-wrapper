@@ -479,3 +479,71 @@ class TestUpsertOutcomeApi:
         assert result.outcome == "noop"
         assert client.adapter.create.call_count == 0
         assert client.adapter.update.call_count == 0
+
+
+class TestCompareNormalization:
+    """Regression coverage for compare-time normalization of tag payloads."""
+
+    def test_normalize_for_compare_sorts_tag_dicts_without_type_error(self):
+        value = [
+            {"name": "vmware-sync"},
+            {"name": "manual"},
+        ]
+
+        normalized = NetBoxExtendedClient._normalize_for_compare(value, key="tags")
+
+        assert normalized == [
+            {"name": "manual"},
+            {"name": "vmware-sync"},
+        ]
+
+    def test_upsert_with_outcome_noop_when_tag_dict_order_differs(self):
+        client = _make_client()
+        existing = {
+            "id": 104,
+            "name": "host-1",
+            "tags": [
+                {"name": "manual"},
+                {"name": "vmware-sync"},
+            ],
+        }
+        client.adapter.get.return_value = existing
+
+        result = client.upsert_with_outcome(
+            "dcim.devices",
+            {
+                "name": "host-1",
+                "tags": [
+                    {"name": "vmware-sync"},
+                    {"name": "manual"},
+                ],
+            },
+            lookup_fields=["name"],
+        )
+
+        assert result.object == existing
+        assert result.outcome == "noop"
+        assert client.adapter.update.call_count == 0
+
+    def test_upsert_with_outcome_noop_when_tag_dicts_match(self):
+        client = _make_client()
+        existing = {
+            "id": 104,
+            "name": "host-a",
+            "tags": [{"name": "manual"}, {"name": "vmware-sync"}],
+        }
+        client.adapter.get.return_value = existing
+
+        result = client.upsert_with_outcome(
+            "dcim.devices",
+            {
+                "name": "host-a",
+                "tags": [{"name": "vmware-sync"}, {"name": "manual"}],
+            },
+            lookup_fields=["name"],
+        )
+
+        assert result.object == existing
+        assert result.outcome == "noop"
+        assert client.adapter.create.call_count == 0
+        assert client.adapter.update.call_count == 0
