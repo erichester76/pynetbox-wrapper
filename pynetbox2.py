@@ -1786,7 +1786,11 @@ class NetBoxExtendedClient:
 
         # Helper: normalize tags/lists
         def norm_list(lst):
-            return sorted([normalize(x) for x in lst])
+            normalized_items = [normalize(x) for x in lst]
+            return sorted(
+                normalized_items,
+                key=lambda item: json.dumps(item, sort_keys=True, default=str),
+            )
 
         # NetBox choice fields are returned as {"value": ..., "label": ...} dicts.
         # Normalize them to just the value string so that e.g. "active" compares
