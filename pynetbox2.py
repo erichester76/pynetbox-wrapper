@@ -1797,17 +1797,57 @@ class NetBoxExtendedClient:
 
             return sorted(normalized_items, key=sort_key)
 
+        compare_key = key.lower() if isinstance(key, str) else key
+
         # NetBox choice fields are returned as {"value": ..., "label": ...} dicts.
         # Normalize them to just the value string so that e.g. "active" compares
         # equal to {"value": "active", "label": "Active"} and spurious updates
         # for fields like status/face are avoided.
         if isinstance(value, dict) and "value" in value and "label" in value:
-            return normalize(value["value"])
+            return normalize(value["value"], resource=resource, key=compare_key)
+
+        def normalize_choice_like(candidate):
+            if isinstance(candidate, dict):
+                for attr in ("value", "slug", "name", "id"):
+                    if attr in candidate and candidate[attr] is not None:
+                        return normalize(candidate[attr], resource=resource, key=compare_key)
+                return candidate
+
+            if not isinstance(candidate, (int, float, str, bool, type(None), list, tuple, set)):
+                for attr in ("value", "slug", "name", "id"):
+                    attr_val = getattr(candidate, attr, None)
+                    if attr_val is not None:
+                        return normalize(attr_val, resource=resource, key=compare_key)
+            return candidate.lower() if isinstance(candidate, str) else candidate
+
+        def normalize_tag_item(item):
+            if isinstance(item, dict):
+                for attr in ("slug", "name", "value", "id"):
+                    if attr in item and item[attr] is not None:
+                        tag_value = item[attr]
+                        if isinstance(tag_value, str):
+                            return {"name": tag_value.lower()}
+                        return {"id": tag_value}
+                return item
+            if isinstance(item, str):
+                return {"name": item.lower()}
+            if not isinstance(item, (int, float, bool, type(None), list, tuple, set)):
+                for attr in ("slug", "name", "value", "id"):
+                    attr_val = getattr(item, attr, None)
+                    if attr_val is not None:
+                        if isinstance(attr_val, str):
+                            return {"name": attr_val.lower()}
+                        return {"id": attr_val}
+            return {"id": item}
 
         # Dict normalization
         if isinstance(value, dict):
             normed = {}
             for k, v in sorted(value.items()):
+                lowered_key = k.lower()
+                if lowered_key in ("status", "type", "interface_type"):
+                    normed[k] = normalize_choice_like(v)
+                    continue
                 # FK normalization: id/name
                 if k.endswith('_id') or k in ('site', 'tenant', 'role', 'device_type', 'platform', 'location', 'rack', 'cluster', 'group', 'type', 'vlan', 'vrf', 'assigned_object'):
                     # Always prefer id if present, else name, else original value
@@ -1830,7 +1870,12 @@ class NetBoxExtendedClient:
                     v = norm_vlan_desc(v)
                 # Tags normalization
                 if k in ('tags', 'tagged_vlans'):
-                    v = norm_list(v)
+                    if not isinstance(v, (list, tuple, set)):
+                        v = [] if v is None else [v]
+                    v = sorted(
+                        [normalize_tag_item(tag) for tag in v],
+                        key=lambda item: json.dumps(item, sort_keys=True, default=str),
+                    )
                 # Number normalization
                 if isinstance(v, float) and v.is_integer():
                     v = int(v)
@@ -1839,6 +1884,11 @@ class NetBoxExtendedClient:
 
         # List normalization
         if isinstance(value, (list, tuple, set)):
+            if compare_key in ('tags', 'tagged_vlans'):
+                return sorted(
+                    [normalize_tag_item(tag) for tag in value],
+                    key=lambda item: json.dumps(item, sort_keys=True, default=str),
+                )
             return norm_list(value)
 
         # MAC normalization (standalone)
@@ -1851,14 +1901,23 @@ class NetBoxExtendedClient:
 
         # Tags normalization (standalone)
         if key in ('tags', 'tagged_vlans'):
-            return norm_list(value)
+            if not isinstance(value, (list, tuple, set)):
+                value = [] if value is None else [value]
+            return sorted(
+                [normalize_tag_item(tag) for tag in value],
+                key=lambda item: json.dumps(item, sort_keys=True, default=str),
+            )
+
+        # Normalize status/type choice-ish objects by value/slug/name/id
+        if compare_key in ("status", "type", "interface_type"):
+            return normalize_choice_like(value)
 
         # Number normalization
         if isinstance(value, float) and value.is_integer():
             return int(value)
 
         # Case-insensitive for tags
-        if isinstance(value, str) and key in ('tags',):
+        if isinstance(value, str) and compare_key in ('tags', 'status', 'type', 'interface_type'):
             return value.lower()
 
         # Normalise FK objects (e.g. pynetbox Record instances) to their integer
@@ -1876,10 +1935,20 @@ class NetBoxExtendedClient:
 
         return value
 
-    def _build_existing_subset(self, existing: Any, keys: Sequence[str]) -> dict[str, Any]:
+    def _build_existing_subset(
+        self,
+        existing: Any,
+        keys: Sequence[str],
+        *,
+        resource: Optional[str] = None,
+    ) -> dict[str, Any]:
         subset: dict[str, Any] = {}
         for key in keys:
-            subset[key] = self._normalize_for_compare(self._record_field_value(existing, key))
+            subset[key] = self._normalize_for_compare(
+                self._record_field_value(existing, key),
+                resource=resource,
+                key=key,
+            )
         return subset
 
     def _invalidate_resource_cache(self, resource: str) -> None:
@@ -2318,10 +2387,14 @@ class NetBoxExtendedClient:
                     update_payload[field] = preserved_value
 
         desired_subset = {
-            key: self._normalize_for_compare(value)
+            key: self._normalize_for_compare(value, resource=resource, key=key)
             for key, value in update_payload.items()
         }
-        existing_subset = self._build_existing_subset(existing, list(update_payload.keys()))
+        existing_subset = self._build_existing_subset(
+            existing,
+            list(update_payload.keys()),
+            resource=resource,
+        )
         payload_diff = DeepDiff(existing_subset, desired_subset, ignore_order=True)
         logger.debug(
             "NetBox upsert diff resource=%s id=%s changed=%s deepdiff=%s",
