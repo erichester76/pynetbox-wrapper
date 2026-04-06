@@ -547,3 +547,32 @@ class TestCompareNormalization:
         assert result.outcome == "noop"
         assert client.adapter.create.call_count == 0
         assert client.adapter.update.call_count == 0
+
+    def test_upsert_with_outcome_noop_when_tag_dict_fields_are_reordered(self):
+        client = _make_client()
+        existing = {
+            "id": 105,
+            "name": "host-b",
+            "tags": [
+                {"name": "manual", "slug": "manual"},
+                {"name": "vmware-sync", "slug": "vmware-sync"},
+            ],
+        }
+        client.adapter.get.return_value = existing
+
+        result = client.upsert_with_outcome(
+            "dcim.devices",
+            {
+                "name": "host-b",
+                "tags": [
+                    {"slug": "vmware-sync", "name": "vmware-sync"},
+                    {"slug": "manual", "name": "manual"},
+                ],
+            },
+            lookup_fields=["name"],
+        )
+
+        assert result.object == existing
+        assert result.outcome == "noop"
+        assert client.adapter.create.call_count == 0
+        assert client.adapter.update.call_count == 0
