@@ -367,6 +367,13 @@ class _FakeDeviceTypeRecord:
         )
 
 
+class _FakeRecord:
+    """Tiny Record-like object for compare-path normalization tests."""
+
+    def __init__(self, **fields):
+        self.__dict__.update(fields)
+
+
 class TestPrewarmNoLazyLoading:
     """Regression tests for cache warm triggering pynetbox lazy loading.
 
@@ -539,6 +546,98 @@ class TestCompareNormalization:
             {
                 "name": "host-a",
                 "tags": [{"name": "vmware-sync"}, {"name": "manual"}],
+            },
+            lookup_fields=["name"],
+        )
+
+        assert result.object == existing
+        assert result.outcome == "noop"
+        assert client.adapter.create.call_count == 0
+        assert client.adapter.update.call_count == 0
+
+    def test_upsert_with_outcome_noop_when_status_record_matches_string(self):
+        client = _make_client()
+        existing = {
+            "id": 105,
+            "name": "leaf-01",
+            "status": _FakeRecord(id=1, value="active", label="Active"),
+        }
+        client.adapter.get.return_value = existing
+
+        result = client.upsert_with_outcome(
+            "dcim.devices",
+            {"name": "leaf-01", "status": "active"},
+            lookup_fields=["name"],
+        )
+
+        assert result.object == existing
+        assert result.outcome == "noop"
+        assert client.adapter.update.call_count == 0
+
+    def test_upsert_with_outcome_noop_when_interface_type_record_matches_slug(self):
+        client = _make_client()
+        existing = {
+            "id": 106,
+            "name": "eth0",
+            "type": _FakeRecord(id=1100, slug="1000base-t", label="1000BASE-T (1GE)"),
+        }
+        client.adapter.get.return_value = existing
+
+        result = client.upsert_with_outcome(
+            "dcim.interfaces",
+            {"name": "eth0", "type": "1000base-t"},
+            lookup_fields=["name"],
+        )
+
+        assert result.object == existing
+        assert result.outcome == "noop"
+        assert client.adapter.update.call_count == 0
+
+    def test_upsert_with_outcome_noop_when_tag_record_or_id_dict_matches_name_dict(self):
+        client = _make_client()
+        existing = {
+            "id": 107,
+            "name": "host-tags",
+            "tags": [
+                _FakeRecord(id=9, name="vmware-sync", slug="vmware-sync"),
+                {"id": 11, "name": "manual"},
+            ],
+        }
+        client.adapter.get.return_value = existing
+
+        result = client.upsert_with_outcome(
+            "dcim.devices",
+            {
+                "name": "host-tags",
+                "tags": [{"name": "manual"}, {"name": "vmware-sync"}],
+            },
+            lookup_fields=["name"],
+        )
+
+        assert result.object == existing
+        assert result.outcome == "noop"
+        assert client.adapter.update.call_count == 0
+
+    def test_upsert_with_outcome_noop_when_tag_dict_fields_are_reordered(self):
+        client = _make_client()
+        existing = {
+            "id": 105,
+            "name": "host-b",
+            "tags": [
+                {"name": "manual", "slug": "manual"},
+                {"name": "vmware-sync", "slug": "vmware-sync"},
+            ],
+        }
+        client.adapter.get.return_value = existing
+
+        result = client.upsert_with_outcome(
+            "dcim.devices",
+            {
+                "name": "host-b",
+                "tags": [
+                    {"slug": "vmware-sync", "name": "vmware-sync"},
+                    {"slug": "manual", "name": "manual"},
+                ],
             },
             lookup_fields=["name"],
         )
