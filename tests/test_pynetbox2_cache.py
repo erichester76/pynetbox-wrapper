@@ -14,6 +14,11 @@ another API round-trip.
 
 from __future__ import annotations
 
+import json
+import sys
+import types
+import gzip
+import tempfile
 from unittest.mock import MagicMock
 
 import pytest
@@ -70,6 +75,11 @@ def _make_client() -> NetBoxExtendedClient:
     cfg_stub = MagicMock()
     cfg_stub.retry_attempts = 0
     cfg_stub.cache_backend = "none"
+    cfg_stub.url = "https://netbox.example.com"
+    cfg_stub.token = "nbt_test.token"
+    cfg_stub.branch = None
+    cfg_stub.turbobulk_export_for_prewarm = False
+    cfg_stub.turbobulk_verify_ssl = True
     client.config = cfg_stub
     client.cache = DictCacheBackend()
     client.adapter = MagicMock()
@@ -81,6 +91,8 @@ def _make_client() -> NetBoxExtendedClient:
     }
     client._cache_key_locks_guard = threading.Lock()
     client._cache_key_locks = {}
+    client._turbobulk_models_lock = threading.Lock()
+    client._turbobulk_models = None
     return client
 
 
@@ -337,6 +349,85 @@ class TestPrewarmSentinelKey:
         with pytest.raises(Exception, match="HTTP 503"):
             client.prewarm(["dcim.sites"])
 
+        assert client.adapter.list.call_count == 1
+
+    def test_prewarm_can_use_turbobulk_export(self, monkeypatch):
+        client = _make_client()
+        client.config.prewarm_sentinel_ttl_seconds = 3600
+        client.config.turbobulk_export_for_prewarm = True
+        client.adapter.list.return_value = [{"id": 999, "name": "unexpected"}]
+
+        class FakeTurboBulkClient:
+            def __init__(self, base_url, token, verify_ssl):
+                assert base_url == "https://netbox.example.com"
+                assert token == "nbt_test.token"
+                assert verify_ssl is True
+
+            def get_models(self):
+                return [{"app_label": "dcim", "model_name": "site"}]
+
+            def export(self, model, filters=None, format="jsonl", output_path=None, wait=True, verbose=False):
+                assert model == "dcim.site"
+                assert filters is None
+                assert format == "jsonl"
+                assert output_path is not None
+                with tempfile.NamedTemporaryFile(
+                    dir=output_path,
+                    suffix=".jsonl.gz",
+                    delete=False,
+                ) as handle:
+                    path = handle.name
+                with gzip.open(path, "wt", encoding="utf-8") as handle:
+                    handle.write(json.dumps({"id": 1, "name": "site-a"}) + "\n")
+                    handle.write(json.dumps({"id": 2, "name": "site-b"}) + "\n")
+                return {"path": path}
+
+        monkeypatch.setitem(
+            sys.modules,
+            "turbobulk_client",
+            types.SimpleNamespace(TurboBulkClient=FakeTurboBulkClient),
+        )
+
+        summary = client.prewarm(["dcim.sites"])
+
+        assert summary["dcim.sites"] == 2
+        assert client.adapter.list.call_count == 0
+
+    def test_prewarm_falls_back_to_rest_when_turbobulk_missing(self, monkeypatch):
+        client = _make_client()
+        client.config.prewarm_sentinel_ttl_seconds = 3600
+        client.config.turbobulk_export_for_prewarm = True
+        records = [{"id": 1, "name": "site-a"}]
+        client.adapter.list.return_value = records
+
+        monkeypatch.setitem(sys.modules, "turbobulk_client", None)
+
+        summary = client.prewarm(["dcim.sites"])
+
+        assert summary["dcim.sites"] == 1
+        assert client.adapter.list.call_count == 1
+
+    def test_prewarm_branch_scoped_client_uses_rest_even_when_turbobulk_enabled(self, monkeypatch):
+        client = _make_client()
+        client.config.prewarm_sentinel_ttl_seconds = 3600
+        client.config.turbobulk_export_for_prewarm = True
+        client.config.branch = "feature-branch"
+        records = [{"id": 1, "name": "site-a"}]
+        client.adapter.list.return_value = records
+
+        class ExplodingTurboBulkClient:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("TurboBulk client should not be constructed for branch-scoped prewarm")
+
+        monkeypatch.setitem(
+            sys.modules,
+            "turbobulk_client",
+            types.SimpleNamespace(TurboBulkClient=ExplodingTurboBulkClient),
+        )
+
+        summary = client.prewarm(["dcim.sites"])
+
+        assert summary["dcim.sites"] == 1
         assert client.adapter.list.call_count == 1
 
 

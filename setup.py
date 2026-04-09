@@ -16,6 +16,11 @@ setup(
         "redis>=5.0.0",
         "netboxlabs-diode-sdk>=1.10.0",
     ],
+    extras_require={
+        "turbobulk": [
+            "turbobulk-client>=0.1.4",
+        ],
+    },
     license="Apache-2.0",
     classifiers=[
         "License :: OSI Approved :: Apache Software License",
