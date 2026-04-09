@@ -18,6 +18,7 @@ import json
 import sys
 import types
 import gzip
+import tempfile
 from unittest.mock import MagicMock
 
 import pytest
@@ -365,11 +366,17 @@ class TestPrewarmSentinelKey:
             def get_models(self):
                 return [{"app_label": "dcim", "model_name": "site"}]
 
-            def export(self, model, filters=None, format="jsonl", wait=True, verbose=False):
+            def export(self, model, filters=None, format="jsonl", output_path=None, wait=True, verbose=False):
                 assert model == "dcim.site"
                 assert filters is None
                 assert format == "jsonl"
-                path = "/tmp/pynetbox-wrapper-turbobulk-sites.jsonl.gz"
+                assert output_path is not None
+                with tempfile.NamedTemporaryFile(
+                    dir=output_path,
+                    suffix=".jsonl.gz",
+                    delete=False,
+                ) as handle:
+                    path = handle.name
                 with gzip.open(path, "wt", encoding="utf-8") as handle:
                     handle.write(json.dumps({"id": 1, "name": "site-a"}) + "\n")
                     handle.write(json.dumps({"id": 2, "name": "site-b"}) + "\n")

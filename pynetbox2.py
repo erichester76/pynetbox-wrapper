@@ -25,6 +25,7 @@ import re
 import sqlite3
 import threading
 import time
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
@@ -1816,25 +1817,31 @@ class NetBoxExtendedClient:
             return None
 
         client = self._build_turbobulk_client()
-        export_result = client.export(
-            model,
-            filters=dict(filters) or None,
-            format="jsonl",
-            wait=True,
-            verbose=False,
-        )
-        export_path = export_result.get("path")
-        if not export_path:
-            raise RuntimeError(f"TurboBulk export for {resource} did not return a file path")
+        with tempfile.TemporaryDirectory(prefix="pynetbox2-turbobulk-") as temp_dir:
+            export_result = client.export(
+                model,
+                filters=dict(filters) or None,
+                format="jsonl",
+                output_path=temp_dir,
+                wait=True,
+                verbose=False,
+            )
+            export_path = export_result.get("path")
+            if not export_path:
+                raise RuntimeError(f"TurboBulk export for {resource} did not return a file path")
 
-        export_file = Path(export_path)
-        try:
+            export_file = Path(export_path).resolve()
+            temp_root = Path(temp_dir).resolve()
+            if temp_root not in export_file.parents:
+                raise RuntimeError(
+                    f"TurboBulk export for {resource} returned a path outside the managed temp directory: "
+                    f"{export_file}"
+                )
+            if not export_file.is_file():
+                raise RuntimeError(
+                    f"TurboBulk export for {resource} returned a non-file path: {export_file}"
+                )
             return self._load_turbobulk_rows(export_file)
-        finally:
-            try:
-                export_file.unlink()
-            except FileNotFoundError:
-                pass
 
     def _external_prewarm_sentinel_key(self, resource: str, filters: Mapping[str, Any]) -> Optional[str]:
         # Shared sentinel keys are only defined for unfiltered full-resource prewarm.
