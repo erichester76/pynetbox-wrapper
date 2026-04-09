@@ -12,6 +12,7 @@ This module provides:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import gzip
 from dataclasses import dataclass
 from hashlib import sha256
 import importlib
@@ -24,6 +25,7 @@ import re
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from deepdiff import DeepDiff
@@ -1310,6 +1312,8 @@ class NetBoxExtendedConfig:
     diode_read_fallback: bool = False
     diode_entity_builder: Optional[Callable[[str, Mapping[str, Any]], Any]] = None
     diode_batch_size: int = 1  # Default: 1 (no batching)
+    turbobulk_export_for_prewarm: bool = False
+    turbobulk_verify_ssl: bool = True
 
 
 @dataclass(frozen=True)
@@ -1565,6 +1569,8 @@ class NetBoxExtendedClient:
         diode_read_fallback: bool = False,
         diode_entity_builder: Optional[Callable[[str, Mapping[str, Any]], Any]] = None,
         diode_batch_size: int = 1,
+        turbobulk_export_for_prewarm: bool = False,
+        turbobulk_verify_ssl: bool = True,
     ) -> None:
         self.config = NetBoxExtendedConfig(
             url=url,
@@ -1594,6 +1600,8 @@ class NetBoxExtendedClient:
             diode_read_fallback=diode_read_fallback,
             diode_entity_builder=diode_entity_builder,
             diode_batch_size=diode_batch_size,
+            turbobulk_export_for_prewarm=turbobulk_export_for_prewarm,
+            turbobulk_verify_ssl=turbobulk_verify_ssl,
         )
 
         self.rate_limiter = RateLimiter(
@@ -1617,6 +1625,8 @@ class NetBoxExtendedClient:
         }
         self._cache_key_locks_guard = threading.Lock()
         self._cache_key_locks: dict[str, threading.Lock] = {}
+        self._turbobulk_models_lock = threading.Lock()
+        self._turbobulk_models: Optional[set[str]] = None
         self.cache = self._build_cache_backend(self.config)
         self.adapter = self._build_backend_adapter(self.config)
 
@@ -1728,6 +1738,103 @@ class NetBoxExtendedClient:
         payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"), default=str)
         digest = sha256(payload.encode("utf-8")).hexdigest()
         return f"{resource}:{operation}:{digest}"
+
+    @staticmethod
+    def _resource_to_turbobulk_candidates(resource: str) -> list[str]:
+        if "." not in resource:
+            return [resource]
+        app_label, model_name = resource.split(".", 1)
+        candidates = [resource]
+        if model_name.endswith("ies"):
+            candidates.append(f"{app_label}.{model_name[:-3]}y")
+        elif model_name.endswith(("sses", "xes")):
+            candidates.append(f"{app_label}.{model_name[:-2]}")
+        elif model_name.endswith("s") and not model_name.endswith("ss"):
+            candidates.append(f"{app_label}.{model_name[:-1]}")
+        deduped: list[str] = []
+        for candidate in candidates:
+            if candidate not in deduped:
+                deduped.append(candidate)
+        return deduped
+
+    def _build_turbobulk_client(self) -> Any:
+        try:
+            from turbobulk_client import TurboBulkClient
+        except ImportError as exc:
+            raise RuntimeError(
+                "TurboBulk prewarm requires the optional dependency "
+                "'turbobulk-client'. Install pynetbox-wrapper[turbobulk]."
+            ) from exc
+
+        return TurboBulkClient(
+            base_url=self.config.url,
+            token=self.config.token,
+            verify_ssl=self.config.turbobulk_verify_ssl,
+        )
+
+    def _resolve_turbobulk_model(self, resource: str) -> Optional[str]:
+        with self._turbobulk_models_lock:
+            if self._turbobulk_models is None:
+                client = self._build_turbobulk_client()
+                models = client.get_models()
+                self._turbobulk_models = {
+                    f"{model['app_label']}.{model['model_name']}" for model in models
+                }
+            available = self._turbobulk_models
+
+        for candidate in self._resource_to_turbobulk_candidates(resource):
+            if candidate in available:
+                return candidate
+        return None
+
+    @staticmethod
+    def _load_turbobulk_rows(path: Path) -> list[Any]:
+        opener = gzip.open if path.suffix == ".gz" else open
+        rows: list[Any] = []
+        with opener(path, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                rows.append(json.loads(line))
+        return rows
+
+    def _prewarm_objects_via_turbobulk(self, resource: str, filters: Mapping[str, Any]) -> Optional[list[Any]]:
+        if not self.config.turbobulk_export_for_prewarm:
+            return None
+        if self.config.branch:
+            logger.debug(
+                "Skipping TurboBulk prewarm for resource=%s because branch=%s is set",
+                resource,
+                self.config.branch,
+            )
+            return None
+
+        model = self._resolve_turbobulk_model(resource)
+        if model is None:
+            logger.debug("TurboBulk prewarm unavailable for resource=%s; no matching model", resource)
+            return None
+
+        client = self._build_turbobulk_client()
+        export_result = client.export(
+            model,
+            filters=dict(filters) or None,
+            format="jsonl",
+            wait=True,
+            verbose=False,
+        )
+        export_path = export_result.get("path")
+        if not export_path:
+            raise RuntimeError(f"TurboBulk export for {resource} did not return a file path")
+
+        export_file = Path(export_path)
+        try:
+            return self._load_turbobulk_rows(export_file)
+        finally:
+            try:
+                export_file.unlink()
+            except FileNotFoundError:
+                pass
 
     def _external_prewarm_sentinel_key(self, resource: str, filters: Mapping[str, Any]) -> Optional[str]:
         # Shared sentinel keys are only defined for unfiltered full-resource prewarm.
@@ -2496,7 +2603,18 @@ class NetBoxExtendedClient:
                 resource,
                 filters,
             )
-            objects = self.adapter.list(resource, **dict(filters))
+            try:
+                objects = self._prewarm_objects_via_turbobulk(resource, filters)
+            except Exception as exc:
+                logger.warning(
+                    "TurboBulk prewarm failed for resource=%s filters=%s; falling back to REST: %s",
+                    resource,
+                    filters,
+                    exc,
+                )
+                objects = None
+            if objects is None:
+                objects = self.adapter.list(resource, **dict(filters))
 
             self.cache.set(list_key, objects)
 
@@ -2657,6 +2775,8 @@ def api(
     diode_read_fallback: bool = False,
     diode_entity_builder: Optional[Callable[[str, Mapping[str, Any]], Any]] = None,
     diode_batch_size: int = 1,
+    turbobulk_export_for_prewarm: bool = False,
+    turbobulk_verify_ssl: bool = True,
 ) -> NetBoxAPI:
     """Create a NetBox API client with pynetbox-like constructor semantics.
 
@@ -2693,6 +2813,8 @@ def api(
         diode_read_fallback=diode_read_fallback,
         diode_entity_builder=diode_entity_builder,
         diode_batch_size=diode_batch_size,
+        turbobulk_export_for_prewarm=turbobulk_export_for_prewarm,
+        turbobulk_verify_ssl=turbobulk_verify_ssl,
     )
 
 

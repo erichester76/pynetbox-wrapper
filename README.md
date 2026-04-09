@@ -193,6 +193,26 @@ nb.prewarm(["dcim.devices", "ipam.vlans"])
 print(nb.cache_stats())
 ```
 
+Optional TurboBulk-backed prewarm/export:
+
+```python
+nb = pynetbox.api(
+    url="https://netbox.example.com",
+    token="YOUR_TOKEN",
+    cache_backend="redis",
+    turbobulk_export_for_prewarm=True,
+)
+```
+
+When enabled, `prewarm()` will try TurboBulk export first and fall back to the
+normal REST list path if TurboBulk is unavailable, unsupported for the
+resource, or the client is branch-scoped. Install the optional extra for this
+path:
+
+```bash
+pip install "pynetbox-wrapper[turbobulk]"
+```
+
 ### Retry, Backoff, and Cooldown
 
 The wrapper includes request retry controls intended for noisy or
