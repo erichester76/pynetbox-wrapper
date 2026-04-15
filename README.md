@@ -264,7 +264,7 @@ These are the public `pynetbox2.api(...)` configuration variables, with defaults
 | `retry_jitter_seconds` | `0.0` | Extra random jitter added to backoff delay. |
 | `retry_on_4xx` | `(408, 409, 425, 429)` | Retriable 4xx status codes. |
 | `retry_5xx_cooldown_seconds` | `60.0` | Shared cooldown duration after retriable 5xx responses. |
-| `prewarm_sentinel_ttl_seconds` | `None` | TTL for prewarm sentinel keys; `None` uses `cache_ttl_seconds` (backend default TTL). |
+| `prewarm_sentinel_ttl_seconds` | `None` | TTL for prewarm sentinel keys; `None` uses `cache_ttl_seconds`. |
 | `diode_target` | `"grpcs://localhost:8080"` | Diode target endpoint. |
 | `diode_client_id` | `""` | Diode client ID. |
 | `diode_client_secret` | `""` | Diode client secret. |
