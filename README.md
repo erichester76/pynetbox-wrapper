@@ -158,11 +158,36 @@ Behavior:
 
 ### Cache-Aware Reads
 
-The wrapper supports three cache modes:
+The wrapper supports three cache backends:
 
 - `none`
 - `redis`
 - `sqlite`
+
+Backend behavior and practical cache levels:
+
+- `none`
+  - disables persistence and always reads from NetBox
+  - `use_cache=True` and `use_cache=False` both effectively bypass cache
+- `redis`
+  - shared cache across processes/hosts, good for concurrent collectors
+  - supports key TTL inspection used by `cache_stats()`
+- `sqlite`
+  - local file-backed cache for single-host jobs and local development
+  - isolated to the configured SQLite file path
+
+Per-operation cache behavior:
+
+- `get(..., use_cache=True)` and `list(..., use_cache=True)`
+  - read-through cache (check cache, then fetch and backfill on miss)
+- `get(..., use_cache=False)` and `list(..., use_cache=False)`
+  - bypass lookup cache and refresh values from backend
+- `prewarm(...)`
+  - bulk-fills list and common get keys
+  - writes a prewarm sentinel key so repeated prewarm calls can be skipped
+  - controlled by `prewarm_sentinel_ttl_seconds`
+- `create`, `update`, `delete`, and `upsert*`
+  - invalidate resource cache keys and prewarm sentinel keys
 
 Example:
 
@@ -214,6 +239,42 @@ path:
 ```bash
 pip install "pynetbox-wrapper[turbobulk]"
 ```
+
+### Configuration Variable Index
+
+These are the public `pynetbox2.api(...)` configuration variables, with defaults:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `url` | _(required)_ | NetBox base URL. |
+| `token` | _(required)_ | NetBox API token. |
+| `branch` | `None` | Optional branch scope for read/write operations. |
+| `backend` | `"pynetbox"` | Transport backend (`"pynetbox"` or `"diode"`). |
+| `cache_backend` | `"none"` | Cache backend (`"none"`, `"redis"`, `"sqlite"`). |
+| `cache_ttl_seconds` | `300` | Default TTL for cached list/get records. |
+| `cache_key_prefix` | `"nbx:"` | Prefix for cache keys. |
+| `redis_url` | `"redis://localhost:6379/0"` | Redis connection URL (when `cache_backend="redis"`). |
+| `sqlite_path` | `".nbx_cache.sqlite3"` | SQLite cache DB file (when `cache_backend="sqlite"`). |
+| `rate_limit_per_second` | `0.0` | Request rate limit; `0` disables throttling. |
+| `rate_limit_burst` | `1` | Token bucket burst size for rate limiting. |
+| `retry_attempts` | `3` | Number of retries after initial request attempt. |
+| `retry_initial_delay_seconds` | `0.3` | Initial retry delay. |
+| `retry_backoff_factor` | `2.0` | Exponential backoff multiplier. |
+| `retry_max_delay_seconds` | `15.0` | Maximum retry sleep per attempt. |
+| `retry_jitter_seconds` | `0.0` | Extra random jitter added to backoff delay. |
+| `retry_on_4xx` | `(408, 409, 425, 429)` | Retriable 4xx status codes. |
+| `retry_5xx_cooldown_seconds` | `60.0` | Shared cooldown duration after retriable 5xx responses. |
+| `prewarm_sentinel_ttl_seconds` | `None` | TTL for prewarm sentinel keys; `None` uses `cache_ttl_seconds`. |
+| `diode_target` | `"grpcs://localhost:8080"` | Diode target endpoint. |
+| `diode_client_id` | `""` | Diode client ID. |
+| `diode_client_secret` | `""` | Diode client secret. |
+| `diode_cert_file` | `None` | Optional client certificate path for Diode. |
+| `diode_skip_tls_verify` | `False` | Skip TLS verification for Diode connections. |
+| `diode_read_fallback` | `False` | Use `pynetbox` read adapter with Diode write backend. |
+| `diode_entity_builder` | `None` | Optional custom builder mapping resource/payload to Diode entities. |
+| `diode_batch_size` | `1` | Batch size for Diode ingestion (`1` disables batching). |
+| `turbobulk_export_for_prewarm` | `False` | Attempt TurboBulk export path during prewarm before REST fallback. |
+| `turbobulk_verify_ssl` | `True` | Enable TLS verification for TurboBulk export requests. |
 
 ### Retry, Backoff, and Cooldown
 
